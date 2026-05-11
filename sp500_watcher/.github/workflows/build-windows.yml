@@ -1,0 +1,42 @@
+name: Build Windows App
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build executable
+        run: >
+          pyinstaller
+          --name sp500_watcher
+          --windowed
+          --collect-all webview
+          --hidden-import webview.platforms.edgechromium
+          --hidden-import webview.platforms.winforms
+          --noconfirm
+          sp500_watcher.py
+
+      - name: Package as zip
+        run: Compress-Archive -Path dist\sp500_watcher\* -DestinationPath sp500_watcher_windows.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sp500_watcher_windows
+          path: sp500_watcher_windows.zip
+          retention-days: 30
