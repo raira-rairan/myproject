@@ -1,12 +1,11 @@
-name: Build Windows App
+name: Build App
 
 on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-windows:
     runs-on: windows-latest
-
     steps:
       - uses: actions/checkout@v4
 
@@ -31,6 +30,9 @@ jobs:
           --noconfirm
           sp500_watcher/sp500_watcher.py
 
+      - name: Add howto
+        run: Copy-Item sp500_watcher\howto.txt dist\sp500_watcher\howto.txt
+
       - name: Package as zip
         run: Compress-Archive -Path dist\sp500_watcher\* -DestinationPath sp500_watcher_windows.zip
 
@@ -39,4 +41,47 @@ jobs:
         with:
           name: sp500_watcher_windows
           path: sp500_watcher_windows.zip
+          retention-days: 30
+
+  build-mac:
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest
+            arch: arm64
+          - runner: macos-13
+            arch: intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r sp500_watcher/requirements.txt
+          pip install pyinstaller
+
+      - name: Build app bundle
+        run: >
+          pyinstaller
+          --name sp500_watcher
+          --windowed
+          --collect-all webview
+          --noconfirm
+          sp500_watcher/sp500_watcher.py
+
+      - name: Package as zip
+        run: |
+          cp sp500_watcher/howto.txt dist/howto.txt
+          cd dist && zip -r ../sp500_watcher_mac_${{ matrix.arch }}.zip sp500_watcher.app howto.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sp500_watcher_mac_${{ matrix.arch }}
+          path: sp500_watcher_mac_${{ matrix.arch }}.zip
           retention-days: 30
