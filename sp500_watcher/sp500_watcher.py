@@ -846,6 +846,7 @@ window.addEventListener('pywebviewready', () => {
 
 def main() -> None:
     import sys
+    import ctypes
     api = Api()
     window = webview.create_window(
         title="S&P500 ウォッチャー",
@@ -862,16 +863,23 @@ def main() -> None:
     try:
         webview.start(debug=False, gui=gui)
     except Exception as e:
-        if sys.platform == "win32" and "edgechromium" in str(type(e).__module__ + str(e)).lower() or "webview2" in str(e).lower():
-            import ctypes
+        msg = str(e).lower()
+        if sys.platform == "win32" and ("pythonnet" in msg or "webview2" in msg or "edgechromium" in msg):
             ctypes.windll.user32.MessageBoxW(
                 0,
-                "Microsoft Edge WebView2 Runtime が必要です。\n\n"
-                "以下のURLからインストールしてください:\n"
-                "https://developer.microsoft.com/microsoft-edge/webview2/",
-                "起動エラー",
+                "起動に必要な Microsoft Edge WebView2 Runtime が\n"
+                "インストールされていません。\n\n"
+                "【インストール手順】\n"
+                "1. Microsoft Edge を開いて最新版にアップデートする\n"
+                "   （アップデートすると WebView2 も一緒に入ります）\n\n"
+                "   または\n\n"
+                "2. 以下のURLからインストーラーをダウンロードして実行:\n"
+                "   https://developer.microsoft.com/ja-jp/microsoft-edge/webview2/\n\n"
+                "インストール後にもう一度 sp500_watcher.exe を起動してください。",
+                "起動エラー: WebView2 が見つかりません",
                 0x10,
             )
+            sys.exit(1)
         raise
 
 

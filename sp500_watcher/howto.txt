@@ -11,6 +11,11 @@
 ※「Windows によって PC が保護されました」と表示された場合
 　「詳細情報」→「実行」をクリックすれば起動できます。
 
+※「WebView2 が見つかりません」というエラーが出た場合
+　Microsoft Edge を最新版にアップデートするか、以下のURLから
+　WebView2 Runtime をインストールしてから再起動してください。
+　https://developer.microsoft.com/ja-jp/microsoft-edge/webview2/
+
 【Mac の場合】
 1. もらった zip ファイルをダブルクリックして解凍する
 2. 展開された「sp500_watcher.app」を右クリック →「開く」を選ぶ
