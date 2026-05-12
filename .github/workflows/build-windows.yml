@@ -24,7 +24,6 @@ jobs:
           pyinstaller
           --name sp500_watcher
           --windowed
-          --onefile
           --collect-all webview
           --hidden-import webview.platforms.edgechromium
           --exclude-module pythonnet
@@ -35,8 +34,13 @@ jobs:
 
       - name: Smoke test
         run: |
-          $proc = Start-Process -FilePath "dist\sp500_watcher.exe" -PassThru
+          $proc = Start-Process -FilePath "dist\sp500_watcher\sp500_watcher.exe" -PassThru
           Start-Sleep -Seconds 15
+          $logPath = "dist\sp500_watcher\startup_log.txt"
+          if (Test-Path $logPath) {
+            Write-Host "=== startup_log.txt ==="
+            Get-Content $logPath
+          }
           if ($proc.HasExited) {
             Write-Error "Smoke test FAILED: process exited with code $($proc.ExitCode)"
             exit 1
@@ -46,13 +50,11 @@ jobs:
 
       - name: Prepare release folder
         run: |
-          New-Item -ItemType Directory -Force -Path dist\sp500_watcher_release
-          Copy-Item dist\sp500_watcher.exe dist\sp500_watcher_release\sp500_watcher.exe
-          Copy-Item sp500_watcher\howto.txt dist\sp500_watcher_release\howto.txt
-          Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile "dist\sp500_watcher_release\WebView2Setup.exe"
+          Copy-Item sp500_watcher\howto.txt dist\sp500_watcher\howto.txt
+          Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile "dist\sp500_watcher\WebView2Setup.exe"
 
       - name: Package as zip
-        run: Compress-Archive -Path dist\sp500_watcher_release\* -DestinationPath sp500_watcher_windows.zip
+        run: Compress-Archive -Path dist\sp500_watcher -DestinationPath sp500_watcher_windows.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

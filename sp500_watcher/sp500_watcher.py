@@ -844,9 +844,29 @@ window.addEventListener('pywebviewready', () => {
 """
 
 
+def _startup_log(msg: str) -> None:
+    """exeと同じフォルダに startup_log.txt を書き出す（Windows 配布版のみ）。"""
+    import sys, os
+    if not getattr(sys, "frozen", False):
+        return
+    try:
+        log_path = os.path.join(os.path.dirname(sys.executable), "startup_log.txt")
+        from datetime import datetime
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.now().isoformat()}] {msg}\n")
+    except Exception:
+        pass
+
+
 def main() -> None:
     import sys
     import ctypes
+    import traceback
+
+    _startup_log("=== 起動開始 ===")
+    _startup_log(f"executable: {sys.executable}")
+    _startup_log(f"platform: {sys.platform}")
+
     api = Api()
     window = webview.create_window(
         title="S&P500 ウォッチャー",
@@ -860,9 +880,13 @@ def main() -> None:
     # Windows: edgechromium (WebView2) を明示指定して pythonnet を使わせない。
     # 非ASCII文字を含むパスでも動作する。
     gui = "edgechromium" if sys.platform == "win32" else None
+    _startup_log(f"webview.start(gui={gui!r}) 呼び出し")
     try:
         webview.start(debug=False, gui=gui)
+        _startup_log("webview.start() 正常終了")
     except Exception as e:
+        _startup_log(f"ERROR: {type(e).__name__}: {e}")
+        _startup_log(traceback.format_exc())
         msg = str(e).lower()
         if sys.platform == "win32" and ("pythonnet" in msg or "webview2" in msg or "edgechromium" in msg):
             ctypes.windll.user32.MessageBoxW(
@@ -870,12 +894,14 @@ def main() -> None:
                 "起動に必要な Microsoft Edge WebView2 Runtime が\n"
                 "インストールされていません。\n\n"
                 "【インストール手順】\n"
-                "1. Microsoft Edge を開いて最新版にアップデートする\n"
-                "   （アップデートすると WebView2 も一緒に入ります）\n\n"
+                "1. 同梱の WebView2Setup.exe を実行してインストールする\n\n"
                 "   または\n\n"
-                "2. 以下のURLからインストーラーをダウンロードして実行:\n"
-                "   https://developer.microsoft.com/ja-jp/microsoft-edge/webview2/\n\n"
-                "インストール後にもう一度 sp500_watcher.exe を起動してください。",
+                "2. Microsoft Edge を最新版にアップデートする\n\n"
+                "インストール後にもう一度 sp500_watcher.exe を起動してください。\n\n"
+                "── デバッグ情報 ──\n"
+                "エラー詳細は sp500_watcher.exe と同じフォルダの\n"
+                "startup_log.txt に記録されています。\n"
+                f"({type(e).__name__}: {str(e)[:120]})",
                 "起動エラー: WebView2 が見つかりません",
                 0x10,
             )
