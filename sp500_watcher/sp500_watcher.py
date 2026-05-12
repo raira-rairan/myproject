@@ -859,7 +859,20 @@ def main() -> None:
     # Windows: edgechromium (WebView2) を明示指定して pythonnet を使わせない。
     # 非ASCII文字を含むパスでも動作する。
     gui = "edgechromium" if sys.platform == "win32" else None
-    webview.start(debug=False, gui=gui)
+    try:
+        webview.start(debug=False, gui=gui)
+    except Exception as e:
+        if sys.platform == "win32" and "edgechromium" in str(type(e).__module__ + str(e)).lower() or "webview2" in str(e).lower():
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(
+                0,
+                "Microsoft Edge WebView2 Runtime が必要です。\n\n"
+                "以下のURLからインストールしてください:\n"
+                "https://developer.microsoft.com/microsoft-edge/webview2/",
+                "起動エラー",
+                0x10,
+            )
+        raise
 
 
 if __name__ == "__main__":

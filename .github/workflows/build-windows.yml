@@ -24,16 +24,34 @@ jobs:
           pyinstaller
           --name sp500_watcher
           --windowed
+          --onefile
           --collect-all webview
           --hidden-import webview.platforms.edgechromium
+          --exclude-module pythonnet
+          --exclude-module clr
+          --exclude-module clr_loader
           --noconfirm
           sp500_watcher/sp500_watcher.py
 
+      - name: Smoke test
+        run: |
+          $proc = Start-Process -FilePath "dist\sp500_watcher.exe" -PassThru
+          Start-Sleep -Seconds 15
+          if ($proc.HasExited) {
+            Write-Error "Smoke test FAILED: process exited with code $($proc.ExitCode)"
+            exit 1
+          }
+          $proc.Kill()
+          Write-Host "Smoke test PASSED"
+
       - name: Add howto
-        run: Copy-Item sp500_watcher\howto.txt dist\sp500_watcher\howto.txt
+        run: |
+          New-Item -ItemType Directory -Force -Path dist\sp500_watcher_release
+          Copy-Item dist\sp500_watcher.exe dist\sp500_watcher_release\sp500_watcher.exe
+          Copy-Item sp500_watcher\howto.txt dist\sp500_watcher_release\howto.txt
 
       - name: Package as zip
-        run: Compress-Archive -Path dist\sp500_watcher\* -DestinationPath sp500_watcher_windows.zip
+        run: Compress-Archive -Path dist\sp500_watcher_release\* -DestinationPath sp500_watcher_windows.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
