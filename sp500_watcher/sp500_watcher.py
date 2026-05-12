@@ -845,6 +845,7 @@ window.addEventListener('pywebviewready', () => {
 
 
 def main() -> None:
+    import sys
     api = Api()
     window = webview.create_window(
         title="S&P500 ウォッチャー",
@@ -855,7 +856,10 @@ def main() -> None:
         min_size=(760, 540),
         background_color="#0d1117",
     )
-    webview.start(debug=False)
+    # Windows: edgechromium (WebView2) を明示指定して pythonnet を使わせない。
+    # 非ASCII文字を含むパスでも動作する。
+    gui = "edgechromium" if sys.platform == "win32" else None
+    webview.start(debug=False, gui=gui)
 
 
 if __name__ == "__main__":

@@ -26,7 +26,6 @@ jobs:
           --windowed
           --collect-all webview
           --hidden-import webview.platforms.edgechromium
-          --hidden-import webview.platforms.winforms
           --noconfirm
           sp500_watcher/sp500_watcher.py
 
