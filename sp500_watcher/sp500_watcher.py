@@ -1,23 +1,26 @@
 #!/usr/bin/env python3
-"""S&P500 ウォッチャー - pywebview版"""
+"""S&P500 ウォッチャー"""
 
 import warnings
 warnings.filterwarnings("ignore")
 
 import json
 import html as html_mod
+import os
 import re
+import socket
+import sys
 import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional, Dict, List, Tuple
 
 import pytz
 import yfinance as yf
-import webview
 
 NYSE_TZ = pytz.timezone("America/New_York")
 JST     = pytz.timezone("Asia/Tokyo")
@@ -538,8 +541,9 @@ async function doRefresh() {
   document.getElementById('spinner').classList.add('show');
 
   try {
-    const raw  = await window.pywebview.api.fetch_all(currentPeriod, chartSymbol);
-    const data = JSON.parse(raw);
+    const resp = await fetch(`/api/fetch_all?period_idx=${currentPeriod}&chart_symbol=${encodeURIComponent(chartSymbol)}`);
+    if (!resp.ok) throw new Error('fetch_all failed');
+    const data = await resp.json();
     updateCards(data.quotes, data.symbols_open, data.period_changes);
     lastChartArgs = [data.history, data.quotes[chartSymbol],
                      !data.is_open ? data.quotes['ES=F'] : null];
@@ -809,8 +813,9 @@ function updateChart(hist, symQ, futuresQ) {
 // ── ニューステッカー ──────────────────────────────────────────────────────────
 async function updateNews() {
   try {
-    const raw   = await window.pywebview.api.fetch_news();
-    const items = JSON.parse(raw);
+    const resp  = await fetch('/api/fetch_news');
+    if (!resp.ok) throw new Error('fetch_news failed');
+    const items = await resp.json();
     if (!items.length) return;
 
     const sep  = '<span class="ticker-dot"> ◆ </span>';
@@ -835,7 +840,7 @@ function escHtml(s) {
 }
 
 // ── 起動 ─────────────────────────────────────────────────────────────────────
-window.addEventListener('pywebviewready', () => {
+window.addEventListener('DOMContentLoaded', () => {
   doRefresh();
 });
 </script>
@@ -845,68 +850,110 @@ window.addEventListener('pywebviewready', () => {
 
 
 def _startup_log(msg: str) -> None:
-    """exeと同じフォルダに startup_log.txt を書き出す（Windows 配布版のみ）。"""
-    import sys, os
+    """exeと同じフォルダに startup_log.txt を書き出す（配布版のみ）。"""
     if not getattr(sys, "frozen", False):
         return
     try:
         log_path = os.path.join(os.path.dirname(sys.executable), "startup_log.txt")
-        from datetime import datetime
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(f"[{datetime.now().isoformat()}] {msg}\n")
     except Exception:
         pass
 
 
+# ── ローカル HTTP サーバー ─────────────────────────────────────────────────────
+_http_api: Optional["Api"] = None
+
+
+class _ApiHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        qs = urllib.parse.parse_qs(parsed.query)
+        if parsed.path == "/":
+            body = HTML.encode("utf-8")
+            ct = "text/html; charset=utf-8"
+        elif parsed.path == "/api/fetch_all":
+            pid = int(qs.get("period_idx", ["6"])[0])
+            sym = qs.get("chart_symbol", ["^GSPC"])[0]
+            body = _http_api.fetch_all(pid, sym).encode("utf-8")  # type: ignore[union-attr]
+            ct = "application/json; charset=utf-8"
+        elif parsed.path == "/api/fetch_news":
+            body = _http_api.fetch_news().encode("utf-8")  # type: ignore[union-attr]
+            ct = "application/json; charset=utf-8"
+        else:
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", ct)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_: object) -> None:
+        pass  # サーバーログを抑制
+
+
+def _find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+# ── エントリポイント ──────────────────────────────────────────────────────────
 def main() -> None:
-    import sys
-    import ctypes
     import traceback
+    import ctypes
+
+    global _http_api
 
     _startup_log("=== 起動開始 ===")
     _startup_log(f"executable: {sys.executable}")
     _startup_log(f"platform: {sys.platform}")
 
-    api = Api()
-    window = webview.create_window(
-        title="S&P500 ウォッチャー",
-        html=HTML,
-        js_api=api,
-        width=1060,
-        height=740,
-        min_size=(760, 540),
-        background_color="#0d1117",
-    )
-    # Windows: edgechromium (WebView2) を明示指定して pythonnet を使わせない。
-    # 非ASCII文字を含むパスでも動作する。
-    gui = "edgechromium" if sys.platform == "win32" else None
-    _startup_log(f"webview.start(gui={gui!r}) 呼び出し")
+    _http_api = Api()
+    port = _find_free_port()
+    _startup_log(f"HTTP server port: {port}")
+
+    server = ThreadingHTTPServer(("127.0.0.1", port), _ApiHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    _startup_log("HTTP server started")
+
     try:
-        webview.start(debug=False, gui=gui)
-        _startup_log("webview.start() 正常終了")
+        from PySide6.QtWidgets import QApplication, QMainWindow
+        from PySide6.QtWebEngineWidgets import QWebEngineView
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QColor
+
+        _startup_log("PySide6 imported OK")
+
+        qt_app = QApplication(sys.argv)
+        window = QMainWindow()
+        window.setWindowTitle("S&P500 ウォッチャー")
+        window.setMinimumSize(760, 540)
+        window.resize(1060, 740)
+
+        view = QWebEngineView()
+        view.page().setBackgroundColor(QColor("#0d1117"))
+        view.load(QUrl(f"http://127.0.0.1:{port}/"))
+        window.setCentralWidget(view)
+        window.show()
+
+        _startup_log("Qt window shown")
+        sys.exit(qt_app.exec())
+
     except Exception as e:
         _startup_log(f"ERROR: {type(e).__name__}: {e}")
         _startup_log(traceback.format_exc())
-        msg = str(e).lower()
-        if sys.platform == "win32" and ("pythonnet" in msg or "webview2" in msg or "edgechromium" in msg):
+        if sys.platform == "win32":
             ctypes.windll.user32.MessageBoxW(
                 0,
-                "起動に必要な Microsoft Edge WebView2 Runtime が\n"
-                "インストールされていません。\n\n"
-                "【インストール手順】\n"
-                "1. 同梱の WebView2Setup.exe を実行してインストールする\n\n"
-                "   または\n\n"
-                "2. Microsoft Edge を最新版にアップデートする\n\n"
-                "インストール後にもう一度 sp500_watcher.exe を起動してください。\n\n"
-                "── デバッグ情報 ──\n"
-                "エラー詳細は sp500_watcher.exe と同じフォルダの\n"
-                "startup_log.txt に記録されています。\n"
-                f"({type(e).__name__}: {str(e)[:120]})",
-                "起動エラー: WebView2 が見つかりません",
+                f"起動エラーが発生しました。\n\n"
+                f"startup_log.txt を確認してください。\n\n"
+                f"({type(e).__name__}: {str(e)[:200]})",
+                "起動エラー",
                 0x10,
             )
-            sys.exit(1)
-        raise
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -24,18 +24,14 @@ jobs:
           pyinstaller
           --name sp500_watcher
           --windowed
-          --collect-all webview
-          --hidden-import webview.platforms.edgechromium
-          --exclude-module pythonnet
-          --exclude-module clr
-          --exclude-module clr_loader
+          --collect-all PySide6
           --noconfirm
           sp500_watcher/sp500_watcher.py
 
       - name: Smoke test
         run: |
           $proc = Start-Process -FilePath "dist\sp500_watcher\sp500_watcher.exe" -PassThru
-          Start-Sleep -Seconds 15
+          Start-Sleep -Seconds 20
           $logPath = "dist\sp500_watcher\startup_log.txt"
           if (Test-Path $logPath) {
             Write-Host "=== startup_log.txt ==="
@@ -45,13 +41,17 @@ jobs:
             Write-Error "Smoke test FAILED: process exited with code $($proc.ExitCode)"
             exit 1
           }
+          $logContent = if (Test-Path $logPath) { Get-Content $logPath -Raw } else { "" }
+          if ($logContent -notmatch "Qt window shown") {
+            $proc.Kill()
+            Write-Error "Smoke test FAILED: Qt window not shown in log"
+            exit 1
+          }
           $proc.Kill()
           Write-Host "Smoke test PASSED"
 
       - name: Prepare release folder
-        run: |
-          Copy-Item sp500_watcher\howto.txt dist\sp500_watcher\howto.txt
-          Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile "dist\sp500_watcher\WebView2Setup.exe"
+        run: Copy-Item sp500_watcher\howto.txt dist\sp500_watcher\howto.txt
 
       - name: Package as zip
         run: Compress-Archive -Path dist\sp500_watcher -DestinationPath sp500_watcher_windows.zip
@@ -90,7 +90,7 @@ jobs:
           pyinstaller
           --name sp500_watcher
           --windowed
-          --collect-all webview
+          --collect-all PySide6
           --noconfirm
           sp500_watcher/sp500_watcher.py
 
