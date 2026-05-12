@@ -44,11 +44,12 @@ jobs:
           $proc.Kill()
           Write-Host "Smoke test PASSED"
 
-      - name: Add howto
+      - name: Prepare release folder
         run: |
           New-Item -ItemType Directory -Force -Path dist\sp500_watcher_release
           Copy-Item dist\sp500_watcher.exe dist\sp500_watcher_release\sp500_watcher.exe
           Copy-Item sp500_watcher\howto.txt dist\sp500_watcher_release\howto.txt
+          Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile "dist\sp500_watcher_release\WebView2Setup.exe"
 
       - name: Package as zip
         run: Compress-Archive -Path dist\sp500_watcher_release\* -DestinationPath sp500_watcher_windows.zip
