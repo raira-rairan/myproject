@@ -2,4 +2,3 @@ yfinance>=0.2
 pandas>=2.0
 pytz>=2024.1
 PySide6>=6.4
-PySide6-WebEngine>=6.4
