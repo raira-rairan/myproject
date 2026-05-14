@@ -538,7 +538,7 @@ body{background:#0d1117;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFo
     <div class="pf-foot-label">合計評価額（推定）</div>
     <div class="pf-foot-total" id="pf-foot-total"></div>
     <div class="pf-foot-chg" id="pf-foot-chg"></div>
-    <div class="pf-foot-note">※ 前日の指数終値・為替レートから推定した速報値</div>
+    <div class="pf-foot-note" id="pf-foot-note">※ 前日の指数終値・為替レートから推定した速報値</div>
   </div>
 </div>
 
