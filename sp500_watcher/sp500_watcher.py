@@ -42,6 +42,12 @@ FX_PAIRS: List[Tuple[str, str]] = [
 
 ALL_CARDS = INDICES + FX_PAIRS
 
+# ポートフォリオデータ保存先
+def _portfolio_file() -> str:
+    base = (os.path.dirname(sys.executable) if getattr(sys, "frozen", False)
+            else os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, "portfolio.json")
+
 PERIODS: List[Tuple[str, str, str]] = [
     ("1日",   "1d",  "5m"),
     ("1週",   "5d",  "1h"),
@@ -317,6 +323,25 @@ class Api:
     def fetch_news(self) -> str:
         return json.dumps(fetch_news_items())
 
+    def load_portfolio(self) -> str:
+        try:
+            path = _portfolio_file()
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    return f.read()
+        except Exception:
+            pass
+        return json.dumps({"holdings": []})
+
+    def save_portfolio(self, data: str) -> str:
+        try:
+            parsed = json.loads(data)
+            with open(_portfolio_file(), "w", encoding="utf-8") as f:
+                json.dump(parsed, f, ensure_ascii=False, indent=2)
+            return json.dumps({"ok": True})
+        except Exception as e:
+            return json.dumps({"ok": False, "error": str(e)})
+
 
 # ── HTML ──────────────────────────────────────────────────────────────────────
 HTML = """<!DOCTYPE html>
@@ -380,6 +405,36 @@ body{background:#0d1117;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFo
 #spinner.show{display:flex}
 .spin{width:34px;height:34px;border:3px solid #30363d;border-top-color:#58a6ff;border-radius:50%;animation:spin .7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
+
+/* PFボタン */
+#pf-toggle-btn{background:transparent;border:1px solid #30363d;color:#8b949e;padding:6px 14px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;transition:all .15s}
+#pf-toggle-btn:hover{border-color:#8b949e;color:#c9d1d9}
+#pf-toggle-btn.active{border-color:#58a6ff;color:#58a6ff;background:#1c2128}
+
+/* ポートフォリオパネル */
+#pf-overlay{display:none;position:fixed;inset:0;background:rgba(13,17,23,.55);z-index:50}
+#pf-overlay.show{display:block}
+#pf-panel{position:fixed;top:0;right:0;bottom:0;width:340px;background:#161b22;border-left:1px solid #30363d;display:none;flex-direction:column;z-index:51;box-shadow:-6px 0 24px rgba(0,0,0,.5)}
+#pf-panel.show{display:flex}
+#pf-hdr{padding:10px 14px;display:flex;align-items:center;gap:8px;border-bottom:1px solid #30363d;flex-shrink:0}
+#pf-hdr-title{font-size:13px;font-weight:700;flex:1;color:#c9d1d9}
+.pf-btn{background:transparent;border:1px solid #30363d;color:#8b949e;padding:3px 10px;border-radius:4px;font-size:11px;cursor:pointer;transition:all .15s}
+.pf-btn:hover{border-color:#8b949e;color:#c9d1d9}
+#pf-body{flex:1;overflow-y:auto;padding:10px 14px}
+.pf-row{padding:9px 0;border-bottom:1px solid #21262d}
+.pf-row:last-child{border-bottom:none}
+.pf-row-name{font-size:11px;color:#8b949e;margin-bottom:4px}
+.pf-row-vals{display:flex;align-items:baseline;gap:7px}
+.pf-row-amt{font-size:16px;font-weight:700;color:#c9d1d9}
+.pf-row-chg{font-size:11px}
+.pf-row-prev{font-size:10px;color:#484f58;margin-top:3px}
+#pf-foot{padding:12px 14px;border-top:1px solid #30363d;background:#21262d;flex-shrink:0}
+.pf-foot-label{font-size:10px;color:#8b949e;margin-bottom:3px}
+.pf-foot-total{font-size:19px;font-weight:700;color:#c9d1d9}
+.pf-foot-chg{font-size:12px;margin-top:3px}
+.pf-foot-note{font-size:9px;color:#484f58;margin-top:5px}
+.pf-inp{width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:5px 8px;border-radius:4px;font-size:13px;margin-top:4px;outline:none}
+.pf-inp:focus{border-color:#58a6ff}
 </style>
 </head>
 <body>
@@ -388,6 +443,7 @@ body{background:#0d1117;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFo
   <div id="title">S&P500 ウォッチャー</div>
   <div id="market-status">読込中...</div>
   <div id="updated"></div>
+  <button id="pf-toggle-btn" onclick="togglePortfolio()" title="ポートフォリオ速報">📊 PF</button>
   <button id="refresh-btn" onclick="doRefresh()">↻ 更新</button>
 </div>
 
@@ -468,6 +524,23 @@ body{background:#0d1117;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFo
 
 <div id="spinner"><div class="spin"></div></div>
 
+<!-- ポートフォリオパネル -->
+<div id="pf-overlay" onclick="togglePortfolio()"></div>
+<div id="pf-panel">
+  <div id="pf-hdr">
+    <div id="pf-hdr-title">📊 ポートフォリオ速報</div>
+    <button class="pf-btn" id="pf-edit-btn" onclick="togglePfEdit()">編集</button>
+    <button class="pf-btn" onclick="togglePortfolio()">✕</button>
+  </div>
+  <div id="pf-body"><div style="color:#6e7681;font-size:12px;padding:24px;text-align:center">読込中...</div></div>
+  <div id="pf-foot" style="display:none">
+    <div class="pf-foot-label">合計評価額（推定）</div>
+    <div class="pf-foot-total" id="pf-foot-total"></div>
+    <div class="pf-foot-chg" id="pf-foot-chg"></div>
+    <div class="pf-foot-note">※ 前日の指数終値・為替レートから推定した速報値</div>
+  </div>
+</div>
+
 <script>
 // ── 定数 ──────────────────────────────────────────────────────────────────────
 const CARD_SYMS   = ['^GSPC','ES=F','^NDX','^N225','2559.T','JPY=X','EURJPY=X'];
@@ -486,6 +559,10 @@ let newsTimer     = null;
 let prevQuotes    = {};
 let logScale      = false;
 let lastChartArgs = null;  // [hist, symQ, futuresQ]
+let latestQuotes  = null;
+let pfOpen        = false;
+let pfEdit        = false;
+let pfHoldings    = {};    // { fund_id: amount_jpy }
 
 // 今日のセッション開始を示す垂直補助線プラグイン
 Chart.register({
@@ -522,7 +599,9 @@ async function doRefresh() {
     const resp = await fetch(`/api/fetch_all?period_idx=${currentPeriod}&chart_symbol=${encodeURIComponent(chartSymbol)}`);
     if (!resp.ok) throw new Error('fetch_all failed');
     const data = await resp.json();
+    latestQuotes = data.quotes;
     updateCards(data.quotes, data.symbols_open, data.period_changes);
+    if (pfOpen) renderPortfolio();
     lastChartArgs = [data.history, data.quotes[chartSymbol],
                      !data.is_open ? data.quotes['ES=F'] : null];
     updateChart(...lastChartArgs);
@@ -817,9 +896,143 @@ function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
+// ── ポートフォリオ ──────────────────────────────────────────────────────────────
+const FUND_CFG = [
+  {id:'rakuten_vti',   label:'楽天・VTI',        bm:'^GSPC',  fx:'JPY=X'},
+  {id:'rakuten_acwi',  label:'楽天・オルカン',    bm:'2559.T', fx:null},
+  {id:'rakuten_sp500', label:'楽天・S&P500',      bm:'^GSPC',  fx:'JPY=X'},
+  {id:'rakuten_ndx',   label:'楽天・NASDAQ-100',  bm:'^NDX',   fx:'JPY=X'},
+  {id:'emaxis_nikkei', label:'eMAXIS 日経平均',   bm:'^N225',  fx:null},
+  {id:'emaxis_sp500',  label:'eMAXIS S&P500',     bm:'^GSPC',  fx:'JPY=X'},
+  {id:'emaxis_acwi',   label:'eMAXIS オルカン',   bm:'2559.T', fx:null},
+];
+
+async function loadPortfolio() {
+  try {
+    const r = await fetch('/api/portfolio');
+    const d = await r.json();
+    pfHoldings = {};
+    (d.holdings||[]).forEach(h => { if (h.amount > 0) pfHoldings[h.id] = h.amount; });
+  } catch(e) {}
+}
+
+async function savePortfolio() {
+  const holdings = FUND_CFG.map(f => ({id: f.id, amount: pfHoldings[f.id]||0}));
+  try {
+    await fetch('/api/portfolio', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({holdings}),
+    });
+  } catch(e) {}
+}
+
+function togglePortfolio() {
+  pfOpen = !pfOpen;
+  document.getElementById('pf-overlay').classList.toggle('show', pfOpen);
+  document.getElementById('pf-panel').classList.toggle('show', pfOpen);
+  document.getElementById('pf-toggle-btn').classList.toggle('active', pfOpen);
+  if (pfOpen) renderPortfolio();
+}
+
+function togglePfEdit() {
+  if (pfEdit) {
+    FUND_CFG.forEach(f => {
+      const inp = document.getElementById('pf-inp-'+f.id);
+      if (!inp) return;
+      const v = parseInt(inp.value.replace(/[,，\s]/g,''), 10);
+      if (!isNaN(v) && v > 0) pfHoldings[f.id] = v;
+      else delete pfHoldings[f.id];
+    });
+    savePortfolio();
+    pfEdit = false;
+    document.getElementById('pf-edit-btn').textContent = '編集';
+  } else {
+    pfEdit = true;
+    document.getElementById('pf-edit-btn').textContent = '保存';
+  }
+  renderPortfolio();
+}
+
+function estPct(f) {
+  if (!latestQuotes) return null;
+  const bq = latestQuotes[f.bm];
+  if (!bq || bq.pct == null) return null;
+  let p = bq.pct;
+  if (f.fx) {
+    const fq = latestQuotes[f.fx];
+    if (fq && fq.pct != null)
+      p = ((1 + p/100) * (1 + fq.pct/100) - 1) * 100;
+  }
+  return p;
+}
+
+function renderPortfolio() {
+  const body = document.getElementById('pf-body');
+  let totalBase = 0, totalEst = 0, hasData = false;
+
+  const html = FUND_CFG.map(f => {
+    const amt = pfHoldings[f.id] || 0;
+    const pct = estPct(f);
+    const est = (amt > 0 && pct != null) ? Math.round(amt * (1 + pct/100)) : null;
+    const diff = est != null ? est - amt : null;
+
+    if (amt > 0) {
+      hasData = true;
+      totalBase += amt;
+      if (est != null) totalEst += est;
+    }
+
+    if (pfEdit) {
+      return `<div class="pf-row">
+        <div class="pf-row-name">${f.label}</div>
+        <input id="pf-inp-${f.id}" class="pf-inp" type="text"
+          value="${amt > 0 ? amt.toLocaleString('ja-JP') : ''}"
+          placeholder="マネフォの評価額（円）">
+      </div>`;
+    }
+
+    if (!amt) return `<div class="pf-row">
+      <div class="pf-row-name" style="color:#484f58">${f.label}
+        <span style="font-size:10px"> — 未設定</span></div>
+    </div>`;
+
+    const pctStr  = pct != null ? `${pct>=0?'+':''}${pct.toFixed(2)}%` : '---';
+    const diffStr = diff != null ? `${diff>=0?'+':''}¥${Math.abs(diff).toLocaleString('ja-JP')}` : '';
+    const cls     = pct != null ? (pct >= 0 ? 'up' : 'dn') : 'na';
+    const estStr  = est != null ? `¥${est.toLocaleString('ja-JP')}` : `¥${amt.toLocaleString('ja-JP')}`;
+
+    return `<div class="pf-row">
+      <div class="pf-row-name">${f.label}</div>
+      <div class="pf-row-vals">
+        <span class="pf-row-amt">${estStr}</span>
+        <span class="pf-row-chg ${cls}">${pctStr}</span>
+      </div>
+      <div class="pf-row-prev">前日 ¥${amt.toLocaleString('ja-JP')}
+        ${diffStr ? `<span class="${cls}"> ${diffStr}</span>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+
+  body.innerHTML = html;
+
+  const foot = document.getElementById('pf-foot');
+  if (!pfEdit && hasData && totalEst > 0) {
+    const d   = totalEst - totalBase;
+    const p   = (totalEst/totalBase - 1)*100;
+    const cls = d >= 0 ? 'up' : 'dn';
+    document.getElementById('pf-foot-total').textContent = `¥${totalEst.toLocaleString('ja-JP')}`;
+    document.getElementById('pf-foot-chg').innerHTML =
+      `<span class="${cls}">${d>=0?'+':''}¥${Math.abs(d).toLocaleString('ja-JP')} (${d>=0?'+':''}${p.toFixed(2)}%)</span>`;
+    foot.style.display = '';
+  } else {
+    foot.style.display = 'none';
+  }
+}
+
 // ── 起動 ─────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
-  doRefresh();
+  loadPortfolio().then(() => doRefresh());
 });
 </script>
 </body>
@@ -858,6 +1071,9 @@ class _ApiHandler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/fetch_news":
             body = _http_api.fetch_news().encode("utf-8")  # type: ignore[union-attr]
             ct = "application/json; charset=utf-8"
+        elif parsed.path == "/api/portfolio":
+            body = _http_api.load_portfolio().encode("utf-8")  # type: ignore[union-attr]
+            ct = "application/json; charset=utf-8"
         else:
             self.send_error(404)
             return
@@ -866,6 +1082,19 @@ class _ApiHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def do_POST(self) -> None:
+        if self.path == "/api/portfolio":
+            length = int(self.headers.get("Content-Length", 0))
+            data = self.rfile.read(length).decode("utf-8")
+            body = _http_api.save_portfolio(data).encode("utf-8")  # type: ignore[union-attr]
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_error(404)
 
     def log_message(self, *_: object) -> None:
         pass  # サーバーログを抑制
