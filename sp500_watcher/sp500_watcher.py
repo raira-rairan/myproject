@@ -1101,6 +1101,10 @@ function renderPortfolio() {
     document.getElementById('pf-foot-total').textContent = `¥${totalEst.toLocaleString('ja-JP')}`;
     document.getElementById('pf-foot-chg').innerHTML =
       `<span class="${cls}">${d>=0?'+':''}¥${Math.abs(d).toLocaleString('ja-JP')} (${d>=0?'+':''}${p.toFixed(2)}%)</span>`;
+    const now = new Date();
+    const mm  = now.toLocaleString('en-US', {timeZone:'Asia/Tokyo', month:'numeric'});
+    const dd  = now.toLocaleString('en-US', {timeZone:'Asia/Tokyo', day:'numeric'});
+    document.getElementById('pf-foot-note').textContent = `${mm}/${dd} 22:00 マネフォ更新予定の速報値`;
     foot.style.display = '';
   } else {
     foot.style.display = 'none';
