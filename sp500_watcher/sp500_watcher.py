@@ -563,6 +563,7 @@ let latestQuotes  = null;
 let pfOpen        = false;
 let pfEdit        = false;
 let pfHoldings    = {};    // { fund_id: amount_jpy }
+let pfLastDate    = null;  // 最終自動更新日 "YYYY-MM-DD"
 
 // 今日のセッション開始を示す垂直補助線プラグイン
 Chart.register({
@@ -600,6 +601,7 @@ async function doRefresh() {
     if (!resp.ok) throw new Error('fetch_all failed');
     const data = await resp.json();
     latestQuotes = data.quotes;
+    autoUpdatePortfolio();
     updateCards(data.quotes, data.symbols_open, data.period_changes);
     if (pfOpen) renderPortfolio();
     lastChartArgs = [data.history, data.quotes[chartSymbol],
@@ -913,18 +915,42 @@ async function loadPortfolio() {
     const d = await r.json();
     pfHoldings = {};
     (d.holdings||[]).forEach(h => { if (h.amount > 0) pfHoldings[h.id] = h.amount; });
+    pfLastDate = d.last_date || null;
   } catch(e) {}
 }
 
 async function savePortfolio() {
   const holdings = FUND_CFG.map(f => ({id: f.id, amount: pfHoldings[f.id]||0}));
+  const todayJST = new Date().toLocaleDateString('sv-SE', {timeZone:'Asia/Tokyo'});
   try {
     await fetch('/api/portfolio', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({holdings}),
+      body: JSON.stringify({holdings, last_date: todayJST}),
     });
+    pfLastDate = todayJST;
   } catch(e) {}
+}
+
+function autoUpdatePortfolio() {
+  if (!latestQuotes) return;
+  const todayJST = new Date().toLocaleDateString('sv-SE', {timeZone:'Asia/Tokyo'});
+  if (pfLastDate === todayJST) return;  // 今日すでに更新済み
+
+  let updated = false;
+  FUND_CFG.forEach(f => {
+    const amt = pfHoldings[f.id];
+    if (!amt) return;
+    const pct = estPct(f);
+    if (pct == null) return;
+    pfHoldings[f.id] = Math.round(amt * (1 + pct / 100));
+    updated = true;
+  });
+
+  if (updated) {
+    savePortfolio();
+    if (pfOpen) renderPortfolio();
+  }
 }
 
 function togglePortfolio() {
