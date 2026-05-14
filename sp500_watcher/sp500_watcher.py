@@ -904,9 +904,9 @@ const FUND_CFG = [
   {id:'rakuten_acwi',  label:'楽天・オルカン',    bm:'2559.T', fx:null},
   {id:'rakuten_sp500', label:'楽天・S&P500',      bm:'^GSPC',  fx:'JPY=X'},
   {id:'rakuten_ndx',   label:'楽天・NASDAQ-100',  bm:'^NDX',   fx:'JPY=X'},
-  {id:'emaxis_nikkei', label:'eMAXIS 日経平均',   bm:'^N225',  fx:null},
-  {id:'emaxis_sp500',  label:'eMAXIS S&P500',     bm:'^GSPC',  fx:'JPY=X'},
-  {id:'emaxis_acwi',   label:'eMAXIS オルカン',   bm:'2559.T', fx:null},
+  {id:'emaxis_nikkei', label:'eMAXIS Slim 日経平均',   bm:'^N225',  fx:null},
+  {id:'emaxis_sp500',  label:'eMAXIS Slim S&P500',     bm:'^GSPC',  fx:'JPY=X'},
+  {id:'emaxis_acwi',   label:'eMAXIS Slim オルカン',   bm:'2559.T', fx:null},
 ];
 
 async function loadPortfolio() {
