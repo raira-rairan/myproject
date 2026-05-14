@@ -428,6 +428,7 @@ body{background:#0d1117;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFo
 .pf-row-amt{font-size:16px;font-weight:700;color:#c9d1d9}
 .pf-row-chg{font-size:11px}
 .pf-row-prev{font-size:10px;color:#484f58;margin-top:3px}
+.pf-row-origin{font-size:10px;color:#6e7681;margin-top:2px}
 #pf-foot{padding:12px 14px;border-top:1px solid #30363d;background:#21262d;flex-shrink:0}
 .pf-foot-label{font-size:10px;color:#8b949e;margin-bottom:3px}
 .pf-foot-total{font-size:19px;font-weight:700;color:#c9d1d9}
@@ -563,6 +564,7 @@ let latestQuotes  = null;
 let pfOpen        = false;
 let pfEdit        = false;
 let pfHoldings    = {};    // { fund_id: amount_jpy }
+let pfOrigins     = {};    // { fund_id: { amount, date, usdjpy } }
 let pfLastDate    = null;  // 最終自動更新日 "YYYY-MM-DD"
 
 // 今日のセッション開始を示す垂直補助線プラグイン
@@ -914,14 +916,31 @@ async function loadPortfolio() {
     const r = await fetch('/api/portfolio');
     const d = await r.json();
     pfHoldings = {};
-    (d.holdings||[]).forEach(h => { if (h.amount > 0) pfHoldings[h.id] = h.amount; });
+    pfOrigins  = {};
+    (d.holdings||[]).forEach(h => {
+      if (h.amount > 0) pfHoldings[h.id] = h.amount;
+      if (h.origin_date) pfOrigins[h.id] = {
+        amount: h.origin_amount || h.amount,
+        date:   h.origin_date,
+        usdjpy: h.origin_usdjpy || null,
+      };
+    });
     pfLastDate = d.last_date || null;
   } catch(e) {}
 }
 
 async function savePortfolio() {
-  const holdings = FUND_CFG.map(f => ({id: f.id, amount: pfHoldings[f.id]||0}));
   const todayJST = new Date().toLocaleDateString('sv-SE', {timeZone:'Asia/Tokyo'});
+  const holdings = FUND_CFG.map(f => {
+    const o = pfOrigins[f.id] || {};
+    return {
+      id:            f.id,
+      amount:        pfHoldings[f.id] || 0,
+      origin_amount: o.amount || pfHoldings[f.id] || 0,
+      origin_date:   o.date   || todayJST,
+      origin_usdjpy: o.usdjpy || null,
+    };
+  });
   try {
     await fetch('/api/portfolio', {
       method: 'POST',
@@ -963,12 +982,24 @@ function togglePortfolio() {
 
 function togglePfEdit() {
   if (pfEdit) {
+    const todayJST  = new Date().toLocaleDateString('sv-SE', {timeZone:'Asia/Tokyo'});
+    const usdJpy    = latestQuotes?.['JPY=X']?.price ?? null;
     FUND_CFG.forEach(f => {
       const inp = document.getElementById('pf-inp-'+f.id);
       if (!inp) return;
       const v = parseInt(inp.value.replace(/[,，\s]/g,''), 10);
-      if (!isNaN(v) && v > 0) pfHoldings[f.id] = v;
-      else delete pfHoldings[f.id];
+      if (!isNaN(v) && v > 0) {
+        pfHoldings[f.id] = v;
+        // 手動保存のたびに基準点を更新
+        pfOrigins[f.id] = {
+          amount: v,
+          date:   todayJST,
+          usdjpy: usdJpy ? Math.round(usdJpy * 100) / 100 : null,
+        };
+      } else {
+        delete pfHoldings[f.id];
+        delete pfOrigins[f.id];
+      }
     });
     savePortfolio();
     pfEdit = false;
@@ -1028,15 +1059,35 @@ function renderPortfolio() {
     const cls     = pct != null ? (pct >= 0 ? 'up' : 'dn') : 'na';
     const estStr  = est != null ? `¥${est.toLocaleString('ja-JP')}` : `¥${amt.toLocaleString('ja-JP')}`;
 
+    // 前日表示（日付付き）
+    const prevDate  = pfLastDate ? pfLastDate.slice(5).replace('-','/') : null;
+    const prevLabel = prevDate ? `前日 (${prevDate})` : '前日';
+
+    // 入力時からの累計
+    const o       = pfOrigins[f.id];
+    let originRow = '';
+    if (o && o.amount) {
+      const oDiff = est != null ? est - o.amount : null;
+      const oPct  = oDiff != null ? oDiff / o.amount * 100 : null;
+      const oCls  = oDiff != null ? (oDiff >= 0 ? 'up' : 'dn') : 'na';
+      const oDate = o.date ? o.date.slice(5).replace('-','/') : '—';
+      const oFx   = o.usdjpy ? ` ¥${o.usdjpy.toFixed(2)}/$` : '';
+      const oDiffStr = oDiff != null
+        ? `<span class="${oCls}">${oDiff>=0?'+':''}¥${Math.abs(oDiff).toLocaleString('ja-JP')} (${oDiff>=0?'+':''}${oPct.toFixed(2)}%)</span>`
+        : '---';
+      originRow = `<div class="pf-row-origin">入力時 (${oDate}${oFx}) → ${oDiffStr}</div>`;
+    }
+
     return `<div class="pf-row">
       <div class="pf-row-name">${f.label}</div>
       <div class="pf-row-vals">
         <span class="pf-row-amt">${estStr}</span>
         <span class="pf-row-chg ${cls}">${pctStr}</span>
       </div>
-      <div class="pf-row-prev">前日 ¥${amt.toLocaleString('ja-JP')}
+      <div class="pf-row-prev">${prevLabel} ¥${amt.toLocaleString('ja-JP')}
         ${diffStr ? `<span class="${cls}"> ${diffStr}</span>` : ''}
       </div>
+      ${originRow}
     </div>`;
   }).join('');
 
