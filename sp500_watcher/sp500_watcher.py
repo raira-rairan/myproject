@@ -974,6 +974,10 @@ function autoUpdatePortfolio() {
 
 function togglePortfolio() {
   pfOpen = !pfOpen;
+  if (!pfOpen && pfEdit) {
+    pfEdit = false;
+    document.getElementById('pf-edit-btn').textContent = '編集';
+  }
   document.getElementById('pf-overlay').classList.toggle('show', pfOpen);
   document.getElementById('pf-panel').classList.toggle('show', pfOpen);
   document.getElementById('pf-toggle-btn').classList.toggle('active', pfOpen);
@@ -996,10 +1000,12 @@ function togglePfEdit() {
           date:   todayJST,
           usdjpy: usdJpy ? Math.round(usdJpy * 100) / 100 : null,
         };
-      } else {
+      } else if (inp.value.trim() === '') {
+        // 空欄にした場合のみ削除
         delete pfHoldings[f.id];
         delete pfOrigins[f.id];
       }
+      // 不正な値の場合は変更しない（既存値を保持）
     });
     savePortfolio();
     pfEdit = false;
