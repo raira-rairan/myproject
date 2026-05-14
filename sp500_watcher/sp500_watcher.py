@@ -249,27 +249,8 @@ def fetch_news_items() -> List[str]:
     return [t for _, t in scored[:20]]
 
 
-def _period_start_str(period: str) -> Optional[str]:
-    """Google/Yahoo Finance と同じ基準日（カレンダー日付）を返す。"""
-    import pandas as pd
-    today = pd.Timestamp.now(tz="UTC").normalize()
-    offsets = {
-        "5d":  pd.DateOffset(weeks=1),
-        "1mo": pd.DateOffset(months=1),
-        "3mo": pd.DateOffset(months=3),
-        "6mo": pd.DateOffset(months=6),
-        "1y":  pd.DateOffset(years=1),
-        "5y":  pd.DateOffset(years=5),
-    }
-    if period == "ytd":
-        return f"{today.year}-01-01"
-    if period in offsets:
-        return (today - offsets[period]).strftime("%Y-%m-%d")
-    return None
-
-
 def fetch_period_start_price(symbol: str, period: str, interval: str) -> Optional[float]:
-    """期間開始の終値を返す。Google/Yahoo Finance に合わせカレンダー日付基準で取得する。"""
+    """期間開始の終値を返す。fetch_history と同じ period= クエリを使い、カードとチャートの % を一致させる。"""
     try:
         if interval == "5m":          # 1日は quote の prev_close を使うため不要
             return None
@@ -278,10 +259,7 @@ def fetch_period_start_price(symbol: str, period: str, interval: str) -> Optiona
             if df.empty:
                 return None
             return float(df["Close"].dropna().iloc[0])
-        start = _period_start_str(period)
-        if start is None:
-            return None
-        df = yf.Ticker(symbol).history(start=start, interval="1d")
+        df = yf.Ticker(symbol).history(period=period, interval="1d")
         if df.empty:
             return None
         close = df["Close"].dropna()
