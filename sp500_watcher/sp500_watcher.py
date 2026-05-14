@@ -1100,18 +1100,20 @@ function renderPortfolio() {
   body.innerHTML = html;
 
   const foot = document.getElementById('pf-foot');
-  if (!pfEdit && hasData && totalEst > 0) {
-    const d   = totalEst - totalBase;
-    const p   = (totalEst/totalBase - 1)*100;
+  if (!pfEdit && hasData) {
+    const displayTotal = totalEst > 0 ? totalEst : totalBase;
+    const d   = totalEst > 0 ? totalEst - totalBase : 0;
+    const p   = totalEst > 0 ? (totalEst/totalBase - 1)*100 : 0;
     const cls = d >= 0 ? 'up' : 'dn';
-    document.getElementById('pf-foot-total').textContent = `¥${totalEst.toLocaleString('ja-JP')}`;
-    document.getElementById('pf-foot-chg').innerHTML =
-      `<span class="${cls}">${d>=0?'+':''}¥${Math.abs(d).toLocaleString('ja-JP')} (${d>=0?'+':''}${p.toFixed(2)}%)</span>`;
+    document.getElementById('pf-foot-total').textContent = `¥${displayTotal.toLocaleString('ja-JP')}`;
+    document.getElementById('pf-foot-chg').innerHTML = d !== 0
+      ? `<span class="${cls}">${d>=0?'+':''}¥${Math.abs(d).toLocaleString('ja-JP')} (${d>=0?'+':''}${p.toFixed(2)}%)</span>`
+      : '';
     const now = new Date();
     const mm  = now.toLocaleString('en-US', {timeZone:'Asia/Tokyo', month:'numeric'});
     const dd  = now.toLocaleString('en-US', {timeZone:'Asia/Tokyo', day:'numeric'});
     document.getElementById('pf-foot-note').textContent = `${mm}/${dd} 22:00 マネフォ更新予定の速報値`;
-    foot.style.display = '';
+    foot.style.display = 'block';
   } else {
     foot.style.display = 'none';
   }
