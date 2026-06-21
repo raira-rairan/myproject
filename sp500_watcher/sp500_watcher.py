@@ -25,6 +25,9 @@ import yfinance as yf
 NYSE_TZ = pytz.timezone("America/New_York")
 JST     = pytz.timezone("Asia/Tokyo")
 
+# アプリのバージョン（変更履歴は CHANGELOG.md を参照）
+APP_VERSION = "2026.06.21"
+
 # 株価指数
 INDICES: List[Tuple[str, str]] = [
     ("S&P 500",        "^GSPC"),
@@ -41,6 +44,14 @@ FX_PAIRS: List[Tuple[str, str]] = [
 ]
 
 ALL_CARDS = INDICES + FX_PAIRS
+
+# yfinance が株式分割を反映するまでの一時補正テーブル
+#   { symbol: 分割比率 }  例: 1→10 分割なら 10
+# yfinance 側で分割調整が反映されると価格の段差が消え、補正は自動的に無効になる。
+# 反映後はこの行を削除して問題ない（残しても二重補正は起きない）。
+SPLIT_OVERRIDES: Dict[str, float] = {
+    "2559.T": 10.0,  # オルカン(MAXIS全世界株式) 2026-06-05 に 1→10 分割
+}
 
 # ポートフォリオデータ保存先
 def _portfolio_file() -> str:
@@ -158,32 +169,81 @@ def market_status() -> Tuple[bool, str]:
         return False, "市場クローズ"
 
 
+def _unsplit_adjust(symbol: str, values) -> List[float]:
+    """yfinance の分割過渡期データを整える。
+    (1) 前後の終値と桁が違う単発の異常値（1/10 の誤ティック等）を近傍平均で補間。
+    (2) 未反映の株式分割で生じた段差（約 ratio 倍）を末尾から遡って検出し、
+        それより前を 1/ratio に補正する。
+    yfinance 側で調整が反映されると段差が消えるため、本処理は自動的に無効化される。"""
+    out = [float(v) for v in values]
+    n = len(out)
+    if n < 3:
+        return out
+    # (1) 現在の水準（直近5点の中央値＝単発外れ値に頑健）を基準に、各点を現在スケールへ正規化。
+    #     分割前の約 ratio 倍の点は 1/ratio、1/ratio の誤ティックは ratio 倍に揃える。
+    #     段差の位置検出に頼らないため、混在データや単発異常値があっても破綻しない。
+    ratio = SPLIT_OVERRIDES.get(symbol)
+    if ratio and ratio > 1:
+        tail = sorted(v for v in out[-5:] if v > 0)
+        if tail:
+            level = tail[len(tail) // 2]
+            hi = level * ratio * 0.6      # これ超 → 分割前(約ratio倍)
+            lo = level / (ratio * 0.6)    # これ未満 → 1/ratio の異常値
+            for i in range(n):
+                if out[i] <= 0:
+                    continue
+                if out[i] > hi:
+                    out[i] /= ratio
+                elif out[i] < lo:
+                    out[i] *= ratio
+    # (2) 残った単発の異常値を近傍平均で平滑化（前後平均と 3 倍以上乖離する単点のみ）。
+    #     持続的な水準変化は隣接点も同水準のため対象にならない。
+    for i in range(1, n - 1):
+        a, b, c = out[i - 1], out[i], out[i + 1]
+        if a > 0 and b > 0 and c > 0:
+            nb = (a + c) / 2
+            if nb > 0 and (b / nb > 3 or nb / b > 3):
+                out[i] = nb
+    return out
+
+
 def fetch_quote(symbol: str) -> Optional[Dict]:
     try:
         t  = yf.Ticker(symbol)
         fi = t.fast_info
         price = fi.last_price
 
-        # fast_info.previous_close は日経など一部銘柄でズレることがあるため
-        # history から前日終値を取得する（週末跨ぎを考慮して 5d 取得）
-        # ただし hist[-2] == hist[-1]（データラグで同値）の場合は fast_info にフォールバック
-        hist = t.history(period="5d", interval="1d")
-        if len(hist) >= 2:
-            h_prev = float(hist["Close"].iloc[-2])
-            h_last = float(hist["Close"].iloc[-1])
-            prev_close = h_prev if h_prev != h_last else fi.previous_close
-        else:
-            prev_close = fi.previous_close
+        # 週末跨ぎ・分割直後の混在データに備えて 10 営業日分取得し、
+        # (日付, 終値) の並びを作る
+        hist = t.history(period="10d", interval="1d").dropna(subset=["Close"])
+        rows = [(idx.date(), float(c)) for idx, c in zip(hist.index, hist["Close"])]
 
         if price is None:
-            if hist.empty:
+            if not rows:
                 return None
-            price = float(hist["Close"].iloc[-1])
+            price = rows[-1][1]
+        price = float(price)
+        if price <= 0:
+            return None
 
+        # 前日終値: 最新日より前で、当日価格と同じ桁（1/3〜3倍）に収まる最新の終値を採用。
+        # 株式分割を yfinance が未調整の間は古い終値が約10倍ズレたり、単発の異常値
+        # （1/10 の誤ティック等）が混ざるため、桁が合わない値は飛ばして選ぶ。
+        def _in_band(c: float) -> bool:
+            return c > 0 and price / 3 <= c <= price * 3
+
+        prev_close = None
+        last_date = rows[-1][0] if rows else None
+        for d, c in reversed(rows):
+            if last_date is not None and d < last_date and _in_band(c):
+                prev_close = c
+                break
+        if prev_close is None:
+            pc = fi.previous_close
+            prev_close = float(pc) if pc and _in_band(float(pc)) else None
         if prev_close is None or prev_close == 0:
             return None
-        price      = float(price)
-        prev_close = float(prev_close)
+
         chg = price - prev_close
         pct = chg / prev_close * 100
         return {"price": price, "change": chg, "pct": pct}
@@ -221,7 +281,7 @@ def fetch_history(symbol: str, period: str, interval: str) -> Dict:
                 return {"labels": [], "values": [], "today_start_index": None}
             close = df["Close"].dropna()
             labels = [str(t.date()) for t in close.index]
-        values = [round(float(v), 2) for v in close.values]
+        values = [round(v, 2) for v in _unsplit_adjust(symbol, close.values)]
         return {"labels": labels, "values": values, "today_start_index": today_start_index}
     except Exception:
         return {"labels": [], "values": [], "today_start_index": None}
@@ -270,6 +330,23 @@ def fetch_period_start_price(symbol: str, period: str, interval: str) -> Optiona
             return None
         close = df["Close"].dropna()
         return float(close.iloc[0]) if len(close) > 0 else None
+    except Exception:
+        return None
+
+
+def fetch_origin_close(symbol: str, since_date: str) -> Optional[float]:
+    """since_date 以降で最初の終値（分割補正済み）を返す。
+    ポートフォリオの「入力時起点の累積騰落」の基準値に使う。
+    現在価格(fetch_quote)も分割補正済みなので、両端が同一基準で比較できる。"""
+    try:
+        df = yf.Ticker(symbol).history(start=since_date, interval="1d")
+        if df.empty:
+            return None
+        close = df["Close"].dropna()
+        if len(close) == 0:
+            return None
+        vals = _unsplit_adjust(symbol, close.values)
+        return float(vals[0]) if vals and vals[0] else None
     except Exception:
         return None
 
@@ -342,6 +419,25 @@ class Api:
         except Exception as e:
             return json.dumps({"ok": False, "error": str(e)})
 
+    def origin_closes(self, data: str) -> str:
+        """[{key,symbol,since}] のベンチマーク origin 終値を {key: close} で返す。
+        同一 (symbol, since) はキャッシュして yfinance 呼び出しを重複させない。"""
+        try:
+            queries = json.loads(data).get("queries", [])
+        except Exception:
+            return json.dumps({})
+        cache: Dict[Tuple[str, str], Optional[float]] = {}
+        out: Dict[str, Optional[float]] = {}
+        for q in queries:
+            key, sym, since = q.get("key"), q.get("symbol"), q.get("since")
+            if not key or not sym or not since:
+                continue
+            ck = (sym, since)
+            if ck not in cache:
+                cache[ck] = fetch_origin_close(sym, since)
+            out[key] = cache[ck]
+        return json.dumps(out)
+
 
 # ── HTML ──────────────────────────────────────────────────────────────────────
 HTML = """<!DOCTYPE html>
@@ -357,6 +453,7 @@ body{background:#0d1117;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFo
 /* ヘッダー */
 #header{background:#21262d;padding:10px 18px;display:flex;align-items:center;gap:16px;flex-shrink:0;border-bottom:1px solid #30363d}
 #title{font-size:17px;font-weight:700;color:#c9d1d9;white-space:nowrap}
+#app-ver{font-size:10px;font-weight:400;color:#484f58;vertical-align:middle}
 #market-status{font-size:12px;color:#8b949e;margin-right:auto}
 #updated{font-size:11px;color:#6e7681}
 #refresh-btn{background:#58a6ff;color:#fff;border:none;padding:6px 16px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;transition:background .15s}
@@ -436,12 +533,20 @@ body{background:#0d1117;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFo
 .pf-foot-note{font-size:9px;color:#484f58;margin-top:5px}
 .pf-inp{width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:5px 8px;border-radius:4px;font-size:13px;margin-top:4px;outline:none}
 .pf-inp:focus{border-color:#58a6ff}
+.pf-sel{background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:5px 8px;border-radius:4px;font-size:12px;outline:none;cursor:pointer}
+.pf-sel:focus{border-color:#58a6ff}
+.pf-add-area{margin-top:10px;padding-top:10px;border-top:1px solid #30363d}
+.pf-add-row{display:flex;flex-direction:column;gap:5px}
+.pf-add-label{font-size:10px;color:#8b949e}
+.pf-add-actions{display:flex;gap:6px;margin-top:6px}
+.pf-del-btn{background:transparent;border:1px solid #f85149;color:#f85149;padding:2px 8px;border-radius:4px;font-size:10px;cursor:pointer;transition:all .15s;margin-left:auto;display:block}
+.pf-del-btn:hover{background:#f8514920}
 </style>
 </head>
 <body>
 
 <div id="header">
-  <div id="title">S&P500 ウォッチャー</div>
+  <div id="title">S&P500 ウォッチャー <span id="app-ver">v__APP_VERSION__</span></div>
   <div id="market-status">読込中...</div>
   <div id="updated"></div>
   <button id="pf-toggle-btn" onclick="togglePortfolio()" title="ポートフォリオ速報">📊 PF</button>
@@ -497,13 +602,13 @@ body{background:#0d1117;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFo
 <div id="chart-area">
   <div id="period-bar">
     <span>期間:</span>
-    <button class="period-btn" onclick="changePeriod(0)">1日</button>
+    <button class="period-btn active" onclick="changePeriod(0)">1日</button>
     <button class="period-btn" onclick="changePeriod(1)">1週</button>
     <button class="period-btn" onclick="changePeriod(2)">1ヶ月</button>
     <button class="period-btn" onclick="changePeriod(3)">3ヶ月</button>
     <button class="period-btn" onclick="changePeriod(4)">6ヶ月</button>
     <button class="period-btn" onclick="changePeriod(5)">年初来</button>
-    <button class="period-btn active" onclick="changePeriod(6)">1年</button>
+    <button class="period-btn" onclick="changePeriod(6)">1年</button>
     <button class="period-btn" onclick="changePeriod(7)">5年</button>
     <button class="period-btn" onclick="changePeriod(8)">全期間</button>
     <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
@@ -538,7 +643,7 @@ body{background:#0d1117;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFo
     <div class="pf-foot-label">合計評価額（推定）</div>
     <div class="pf-foot-total" id="pf-foot-total"></div>
     <div class="pf-foot-chg" id="pf-foot-chg"></div>
-    <div class="pf-foot-note" id="pf-foot-note">※ 前日の指数終値・為替レートから推定した速報値</div>
+    <div class="pf-foot-note" id="pf-foot-note">※ 入力時からの指数・為替変動で再計算した速報値</div>
   </div>
 </div>
 
@@ -551,7 +656,7 @@ const COLORS      = ['#58a6ff','#e3b341','#a371f7','#ff7b72','#39d353','#f0b429'
 const FX_SYMS     = new Set(['JPY=X','EURJPY=X']);
 const PERIOD_NAMES = ['1日','1週','1ヶ月','3ヶ月','6ヶ月','年初来','1年','5年','全期間'];
 
-let currentPeriod = 6;
+let currentPeriod = 0;
 let chartSymbol   = '^GSPC';
 let chartSymName  = 'S&P 500';
 let chart         = null;
@@ -566,6 +671,9 @@ let pfEdit        = false;
 let pfHoldings    = {};    // { fund_id: amount_jpy }
 let pfOrigins     = {};    // { fund_id: { amount, date, usdjpy } }
 let pfLastDate    = null;  // 最終自動更新日 "YYYY-MM-DD"
+let customFunds   = [];    // [{ id, label, bm, fx, amount }]
+let pfCash        = 0;     // 現金預金（円、値動きなし）
+let pfOriginBm    = {};    // { fund_id: ベンチマークの入力時(origin)終値 }
 
 // 今日のセッション開始を示す垂直補助線プラグイン
 Chart.register({
@@ -603,7 +711,6 @@ async function doRefresh() {
     if (!resp.ok) throw new Error('fetch_all failed');
     const data = await resp.json();
     latestQuotes = data.quotes;
-    autoUpdatePortfolio();
     updateCards(data.quotes, data.symbols_open, data.period_changes);
     if (pfOpen) renderPortfolio();
     lastChartArgs = [data.history, data.quotes[chartSymbol],
@@ -925,8 +1032,13 @@ async function loadPortfolio() {
         usdjpy: h.origin_usdjpy || null,
       };
     });
+    customFunds = (d.custom_funds||[]).map(f => ({
+      id: f.id, label: f.label, bm: f.bm, fx: f.fx || null,
+    }));
     pfLastDate = d.last_date || null;
+    pfCash     = d.cash || 0;
   } catch(e) {}
+  await refreshOriginCloses();
 }
 
 async function savePortfolio() {
@@ -945,31 +1057,28 @@ async function savePortfolio() {
     await fetch('/api/portfolio', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({holdings, last_date: todayJST}),
+      body: JSON.stringify({holdings, custom_funds: customFunds, last_date: todayJST, cash: pfCash}),
     });
     pfLastDate = todayJST;
   } catch(e) {}
 }
 
-function autoUpdatePortfolio() {
-  if (!latestQuotes) return;
-  const todayJST = new Date().toLocaleDateString('sv-SE', {timeZone:'Asia/Tokyo'});
-  if (pfLastDate === todayJST) return;  // 今日すでに更新済み
-
-  let updated = false;
-  FUND_CFG.forEach(f => {
-    const amt = pfHoldings[f.id];
-    if (!amt) return;
-    const pct = estPct(f);
-    if (pct == null) return;
-    pfHoldings[f.id] = Math.round(amt * (1 + pct / 100));
-    updated = true;
-  });
-
-  if (updated) {
-    savePortfolio();
-    if (pfOpen) renderPortfolio();
-  }
+// 各銘柄のベンチマークについて「入力時(origin_date)の終値」をバックエンドから取得する。
+// 入力時起点の累積騰落を出すための基準値。originは銘柄編集時しか変わらないため、
+// 起動時・編集後にのみ呼べばよい（毎リフレッシュでは呼ばない）。
+async function refreshOriginCloses() {
+  const queries = [...FUND_CFG, ...customFunds]
+    .filter(f => pfOrigins[f.id] && pfOrigins[f.id].date && f.bm)
+    .map(f => ({key: f.id, symbol: f.bm, since: pfOrigins[f.id].date}));
+  if (!queries.length) { pfOriginBm = {}; return; }
+  try {
+    const r = await fetch('/api/origin_closes', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({queries}),
+    });
+    pfOriginBm = await r.json();
+  } catch(e) { /* 取得失敗時は前回値を保持 */ }
 }
 
 function togglePortfolio() {
@@ -988,32 +1097,74 @@ function togglePfEdit() {
   if (pfEdit) {
     const todayJST  = new Date().toLocaleDateString('sv-SE', {timeZone:'Asia/Tokyo'});
     const usdJpy    = latestQuotes?.['JPY=X']?.price ?? null;
-    FUND_CFG.forEach(f => {
+    [...FUND_CFG, ...customFunds].forEach(f => {
       const inp = document.getElementById('pf-inp-'+f.id);
       if (!inp) return;
       const v = parseInt(inp.value.replace(/[,，\s]/g,''), 10);
       if (!isNaN(v) && v > 0) {
         pfHoldings[f.id] = v;
-        // 手動保存のたびに基準点を更新
         pfOrigins[f.id] = {
           amount: v,
           date:   todayJST,
           usdjpy: usdJpy ? Math.round(usdJpy * 100) / 100 : null,
         };
       } else if (inp.value.trim() === '') {
-        // 空欄にした場合のみ削除
         delete pfHoldings[f.id];
         delete pfOrigins[f.id];
       }
-      // 不正な値の場合は変更しない（既存値を保持）
     });
+    const cashInp = document.getElementById('pf-inp-cash');
+    if (cashInp) {
+      const cv = parseInt(cashInp.value.replace(/[,，\s]/g,''), 10);
+      pfCash = (!isNaN(cv) && cv > 0) ? cv : 0;
+    }
     savePortfolio();
     pfEdit = false;
     document.getElementById('pf-edit-btn').textContent = '編集';
+    renderPortfolio();
+    refreshOriginCloses().then(renderPortfolio);  // 入力時(date/額)が変わるので基準を取り直す
+    return;
   } else {
     pfEdit = true;
     document.getElementById('pf-edit-btn').textContent = '保存';
   }
+  renderPortfolio();
+}
+
+function addCustomFund() {
+  const labelEl  = document.getElementById('pf-new-label');
+  const bmEl     = document.getElementById('pf-new-bm');
+  const fxEl     = document.getElementById('pf-new-fx');
+  const amountEl = document.getElementById('pf-new-amount');
+  const label  = labelEl.value.trim();
+  const bm     = bmEl.value;
+  const fx     = fxEl.value || null;
+  const amount = parseInt(amountEl.value.replace(/[,，\s]/g,''), 10);
+  if (!label) { labelEl.focus(); return; }
+  if (!bm)    { bmEl.focus();    return; }
+  const id = 'custom_' + Date.now();
+  customFunds.push({id, label, bm, fx});
+  if (!isNaN(amount) && amount > 0) {
+    const todayJST = new Date().toLocaleDateString('sv-SE', {timeZone:'Asia/Tokyo'});
+    const usdJpy   = latestQuotes?.['JPY=X']?.price ?? null;
+    pfHoldings[id] = amount;
+    pfOrigins[id]  = {
+      amount,
+      date:   todayJST,
+      usdjpy: usdJpy ? Math.round(usdJpy * 100) / 100 : null,
+    };
+  }
+  savePortfolio();
+  labelEl.value = ''; amountEl.value = '';
+  renderPortfolio();
+  refreshOriginCloses().then(renderPortfolio);  // 追加銘柄の入力時基準を取得
+}
+
+function removeCustomFund(id) {
+  customFunds = customFunds.filter(f => f.id !== id);
+  delete pfHoldings[id];
+  delete pfOrigins[id];
+  savePortfolio();
   renderPortfolio();
 }
 
@@ -1030,47 +1181,70 @@ function estPct(f) {
   return p;
 }
 
+// 入力時(origin_date)起点の累積騰落率(%)。est = origin_amount × (1 + これ/100)。
+// ベンチマークの origin終値→現在価格 の比に、米国株系は為替(origin→現在)の比を合成する。
+// 破壊的な日次複利を使わず毎回ここから再計算するため、アプリを毎日開かなくてもずれず、
+// マネフォ実額を再入力すれば自動で校正される。
+function cumPct(f) {
+  if (!latestQuotes) return null;
+  const o  = pfOrigins[f.id];
+  const bq = latestQuotes[f.bm];
+  const ob = pfOriginBm[f.id];
+  if (!o || !bq || bq.price == null || !ob) return null;
+  const ratio = bq.price / ob;
+  // 分割規模(>5倍/<0.2倍)の比率は未補正の株式分割・データ異常の疑い。
+  // 暴れた評価額を出さず null を返し、呼び出し側で base(入力時額)にフォールバックさせる。
+  if (ratio > 5 || ratio < 0.2) return null;
+  let p = ratio - 1;
+  if (f.fx) {
+    const fq = latestQuotes[f.fx];
+    if (fq && fq.price != null && o.usdjpy) p = (1 + p) * (fq.price / o.usdjpy) - 1;
+    else return null;
+  }
+  return p * 100;
+}
+
 function renderPortfolio() {
   const body = document.getElementById('pf-body');
   let totalBase = 0, totalEst = 0, hasData = false;
 
-  const html = FUND_CFG.map(f => {
-    const amt = pfHoldings[f.id] || 0;
-    const pct = estPct(f);
-    const est = (amt > 0 && pct != null) ? Math.round(amt * (1 + pct/100)) : null;
-    const diff = est != null ? est - amt : null;
+  const allFunds = [...FUND_CFG, ...customFunds];
+  const html = allFunds.map(f => {
+    const o    = pfOrigins[f.id];
+    const base = (o && o.amount) ? o.amount : (pfHoldings[f.id] || 0);  // 入力時評価額が基準
+    const dPct = estPct(f);   // 本日の単日騰落（バッジ表示用）
+    const cPct = cumPct(f);   // 入力時起点の累積騰落（評価額の算出用）
+    const est  = (base > 0 && cPct != null) ? Math.round(base * (1 + cPct/100))
+               : (base > 0 ? base : null);
+    const isCustom = customFunds.includes(f);
 
-    if (amt > 0) {
+    if (base > 0) {
       hasData = true;
-      totalBase += amt;
-      if (est != null) totalEst += est;
+      totalBase += base;
+      totalEst  += (est != null ? est : base);  // est欠損時もbaseで補完し合計から脱落させない
     }
 
     if (pfEdit) {
       return `<div class="pf-row">
-        <div class="pf-row-name">${f.label}</div>
+        <div class="pf-row-name" style="display:flex;align-items:center;gap:6px">
+          <span>${escHtml(f.label)}</span>
+          ${isCustom ? `<button class="pf-del-btn" onclick="removeCustomFund('${f.id}')">削除</button>` : ''}
+        </div>
         <input id="pf-inp-${f.id}" class="pf-inp" type="text"
-          value="${amt > 0 ? amt.toLocaleString('ja-JP') : ''}"
+          value="${base > 0 ? base.toLocaleString('ja-JP') : ''}"
           placeholder="マネフォの評価額（円）">
       </div>`;
     }
 
-    if (!amt) return `<div class="pf-row">
-      <div class="pf-row-name" style="color:#484f58">${f.label}
+    if (!base) return `<div class="pf-row">
+      <div class="pf-row-name" style="color:#484f58">${escHtml(f.label)}
         <span style="font-size:10px"> — 未設定</span></div>
     </div>`;
 
-    const pctStr  = pct != null ? `${pct>=0?'+':''}${pct.toFixed(2)}%` : '---';
-    const diffStr = diff != null ? `${diff>=0?'+':''}¥${Math.abs(diff).toLocaleString('ja-JP')}` : '';
-    const cls     = pct != null ? (pct >= 0 ? 'up' : 'dn') : 'na';
-    const estStr  = est != null ? `¥${est.toLocaleString('ja-JP')}` : `¥${amt.toLocaleString('ja-JP')}`;
+    const pctStr  = dPct != null ? `${dPct>=0?'+':''}${dPct.toFixed(2)}%` : '---';
+    const cls     = dPct != null ? (dPct >= 0 ? 'up' : 'dn') : 'na';
+    const estStr  = est != null ? `¥${est.toLocaleString('ja-JP')}` : `¥${base.toLocaleString('ja-JP')}`;
 
-    // 前日表示（日付付き）
-    const prevDate  = pfLastDate ? pfLastDate.slice(5).replace('-','/') : null;
-    const prevLabel = prevDate ? `前日 (${prevDate})` : '前日';
-
-    // 入力時からの累計
-    const o       = pfOrigins[f.id];
     let originRow = '';
     if (o && o.amount) {
       const oDiff = est != null ? est - o.amount : null;
@@ -1085,19 +1259,71 @@ function renderPortfolio() {
     }
 
     return `<div class="pf-row">
-      <div class="pf-row-name">${f.label}</div>
+      <div class="pf-row-name">${escHtml(f.label)}</div>
       <div class="pf-row-vals">
         <span class="pf-row-amt">${estStr}</span>
-        <span class="pf-row-chg ${cls}">${pctStr}</span>
-      </div>
-      <div class="pf-row-prev">${prevLabel} ¥${amt.toLocaleString('ja-JP')}
-        ${diffStr ? `<span class="${cls}"> ${diffStr}</span>` : ''}
+        <span class="pf-row-chg ${cls}">本日 ${pctStr}</span>
       </div>
       ${originRow}
     </div>`;
   }).join('');
 
-  body.innerHTML = html;
+  // 現金預金（ベンチマークなし・値動きなし）
+  let cashHtml = '';
+  if (pfEdit) {
+    cashHtml = `<div class="pf-row">
+      <div class="pf-row-name">💴 現金預金</div>
+      <input id="pf-inp-cash" class="pf-inp" type="text"
+        value="${pfCash > 0 ? pfCash.toLocaleString('ja-JP') : ''}"
+        placeholder="現金・預金（円）">
+    </div>`;
+  } else if (pfCash > 0) {
+    hasData = true;
+    totalBase += pfCash;
+    totalEst  += pfCash;
+    cashHtml = `<div class="pf-row">
+      <div class="pf-row-name">💴 現金預金</div>
+      <div class="pf-row-vals">
+        <span class="pf-row-amt">¥${pfCash.toLocaleString('ja-JP')}</span>
+        <span class="pf-row-chg na">—</span>
+      </div>
+    </div>`;
+  }
+
+  const addForm = pfEdit ? `<div class="pf-add-area">
+    <div class="pf-add-label" style="margin-bottom:6px;font-weight:700">＋ 銘柄を追加</div>
+    <div class="pf-add-row">
+      <div class="pf-add-label">銘柄名</div>
+      <input id="pf-new-label" class="pf-inp" type="text" placeholder="例: SBI S&P500">
+    </div>
+    <div class="pf-add-row" style="margin-top:5px">
+      <div class="pf-add-label">ベンチマーク</div>
+      <select id="pf-new-bm" class="pf-sel" style="width:100%;margin-top:4px">
+        <option value="^GSPC">S&P 500</option>
+        <option value="^NDX">NASDAQ 100</option>
+        <option value="^N225">日経平均株価</option>
+        <option value="2559.T">オルカン</option>
+        <option value="JPY=X">ドル円</option>
+        <option value="EURJPY=X">ユーロ円</option>
+      </select>
+    </div>
+    <div class="pf-add-row" style="margin-top:5px">
+      <div class="pf-add-label">為替換算</div>
+      <select id="pf-new-fx" class="pf-sel" style="width:100%;margin-top:4px">
+        <option value="">なし（円建て）</option>
+        <option value="JPY=X">USD/JPY換算あり（米国株系）</option>
+      </select>
+    </div>
+    <div class="pf-add-row" style="margin-top:5px">
+      <div class="pf-add-label">初期評価額（円、省略可）</div>
+      <input id="pf-new-amount" class="pf-inp" type="text" placeholder="例: 1500000">
+    </div>
+    <div class="pf-add-actions">
+      <button class="pf-btn" onclick="addCustomFund()" style="border-color:#58a6ff;color:#58a6ff">追加</button>
+    </div>
+  </div>` : '';
+
+  body.innerHTML = html + cashHtml + addForm;
 
   const foot = document.getElementById('pf-foot');
   if (!pfEdit && hasData) {
@@ -1128,6 +1354,8 @@ window.addEventListener('DOMContentLoaded', () => {
 </html>
 """
 
+HTML = HTML.replace("__APP_VERSION__", APP_VERSION)
+
 
 def _startup_log(msg: str) -> None:
     """exeと同じフォルダに startup_log.txt を書き出す（配布版のみ）。"""
@@ -1153,7 +1381,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
             body = HTML.encode("utf-8")
             ct = "text/html; charset=utf-8"
         elif parsed.path == "/api/fetch_all":
-            pid = int(qs.get("period_idx", ["6"])[0])
+            pid = int(qs.get("period_idx", ["0"])[0])
             sym = qs.get("chart_symbol", ["^GSPC"])[0]
             body = _http_api.fetch_all(pid, sym).encode("utf-8")  # type: ignore[union-attr]
             ct = "application/json; charset=utf-8"
@@ -1173,10 +1401,13 @@ class _ApiHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self) -> None:
-        if self.path == "/api/portfolio":
+        if self.path in ("/api/portfolio", "/api/origin_closes"):
             length = int(self.headers.get("Content-Length", 0))
             data = self.rfile.read(length).decode("utf-8")
-            body = _http_api.save_portfolio(data).encode("utf-8")  # type: ignore[union-attr]
+            if self.path == "/api/portfolio":
+                body = _http_api.save_portfolio(data).encode("utf-8")  # type: ignore[union-attr]
+            else:
+                body = _http_api.origin_closes(data).encode("utf-8")  # type: ignore[union-attr]
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -1224,7 +1455,7 @@ def main() -> None:
 
         qt_app = QApplication(sys.argv)
         window = QMainWindow()
-        window.setWindowTitle("S&P500 ウォッチャー")
+        window.setWindowTitle(f"S&P500 ウォッチャー v{APP_VERSION}")
         window.setMinimumSize(760, 540)
         window.resize(1060, 740)
 

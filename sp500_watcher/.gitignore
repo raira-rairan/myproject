@@ -1,6 +1,20 @@
 venv/
+venv_build/
 __pycache__/
 *.pyc
 dist/
+dist_mac/
 build/
+build_tmp/
 *.spec
+
+# 配布成果物（ビルドで生成・サイズ大）
+*.zip
+sp500_watcher_mac_arm64*/
+sp500_watcher_windows*/
+
+# 個人データ・OS生成物
+portfolio.json
+.DS_Store
+startup_log.txt
+</content>
